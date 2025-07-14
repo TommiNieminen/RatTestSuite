@@ -3,6 +3,19 @@ from openai import OpenAI
 import Levenshtein
 import copy
 import argparse
+from joblib import Parallel, delayed
+import multiprocessing
+import itertools
+
+def check_for_main_sentence_similarity(main_sentence, generated_so_far, threshold=0.8):
+    # Compute normalized Levenshtein distance (0-1, where 1 is identical)
+    for existing_main_sentence in generated_so_far:
+        distance = Levenshtein.distance(main_sentence.split(), existing_main_sentence.split())
+        max_len = max(len(main_sentence.split()), len(existing_main_sentence.split()))
+        normalized_similarity = 1 - (distance / max_len) if max_len > 0 else 1.0
+        if normalized_similarity > threshold:
+            return existing_main_sentence
+    return None
 
 def update_similarity_estimates(main_sentence, unfiltered_data, removal_threshold):
     """
@@ -22,11 +35,11 @@ def update_similarity_estimates(main_sentence, unfiltered_data, removal_threshol
     filtered_matches = []
     
     for fuzzy_match in data['fuzzy_matches']:
-        fuzzy_sentence = fuzzy_match['sentence']
-        
+        fuzzy_sentence_split = fuzzy_match['sentence'].split()
+        main_sentence_split = main_sentence.split()
         # Compute normalized Levenshtein distance (0-1, where 1 is identical)
-        distance = Levenshtein.distance(main_sentence, fuzzy_sentence)
-        max_len = max(len(main_sentence), len(fuzzy_sentence))
+        distance = Levenshtein.distance(main_sentence_split, fuzzy_sentence_split)
+        max_len = max(len(main_sentence_split), len(fuzzy_sentence_split))
         normalized_similarity = 1 - (distance / max_len) if max_len > 0 else 1.0
         
         # Update the similarity_estimate
@@ -41,85 +54,147 @@ def update_similarity_estimates(main_sentence, unfiltered_data, removal_threshol
 
     return data
 
+def generate_main_sentences_for_domain_and_length(client,example_count,domain,length_range):
+    template = '{"index": INDEX, "terms": [TERMS GO HERE], "sentence": "SENTENCE GOES HERE"}'
 
+    prompt = """Generate {example_count} English sentences from the {domain} domain. The sentences should have {length_range} words.
 
-def generate_main_sentences(client, example_count):
-    prompt = f"""Generate  {example_count} English sentences from the IT, electronics, medical and legal domains. The sentences should come from three length categories, short (10-15 words), medium (16-25 words), and long (25-40 words). Only output the sentences with no explanation. Use the following format: INDEX_NUMBER ||| LENGTH CATEGORY ||| DOMAIN  ||| SENTENCE""".format(example_count=example_count)
+    The sentences should contain at least two terms which be translated in different ways into Finnish. The sentences should be structurally varied, and consist mostly of instructions and descriptions. Do not use semicolons in the sentences.
 
-    prefix = "1 ||| short ||| electronics ||| Remember to turn off the machine before cleaning it."
+    Output the sentences as a json file with the main element 'sentences', and each sentence with the following template {template}. Make sure there are exactly {example_count} sentences. Do not stop generation until the index number is {example_count}. The terms should not be marked up in the sentence, only in the 'terms' field.""".format(example_count=example_count,template=template,domain=domain,length_range=length_range)
 
     response = client.chat.completions.create(
             model="deepseek-chat",
             messages=[
                 #{"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
-                {"role": "assistant", "content": prefix,"prefix": True}
-            ],
-            temperature=0,max_tokens=8000,
+                #{"role": "assistant", "content": prefix,"prefix": True}
+            ],   
+            response_format={
+                'type': 'json_object'
+            },
+            temperature=0.1,max_tokens=8000, # Some variation is desired
             stream=False
         )
         
     answer = response.choices[0].message.content
-    return answer
+    json_answer = json.loads(answer)
+    for sentence in json_answer["sentences"]:
+        sentence["domain"] = domain
+    return json_answer
 
-def generate_fuzzies(client,sentence, example_count=20):
+def generate_main_sentences(client, example_count):
 
-    template = """
-        {
-            "fuzzy_matches": 
-            [
-                {
-                    "type": "deletion",
-                    "similarity_estimate": 0.7,
-                    "sentence": "Update to the latest version."
-                },
-                {
-                    "type": "addition",
-                    "similarity_estimate": 0.7,
-                    "sentence": "Please update the software to the latest version immediately."
-                },
-                {
-                    "type": "replacement",
-                    "similarity_estimate": 0.9,
-                    "sentence": "Upgrade the software to the newest version."
-                    
-                }
-            ]
-        }"""
+    # TODO: When generating a lot of sentences, the style of the sentences becomes uniform. Generate the
+    # domain sentences separately to reduce this effect.
 
-    prompt = """Generate fuzzy matches for the following main sentence: {sentence}
+    domains = ["medical","pharmaceutical","public administration","EU texts","IT administration","IT customer support", "electronics","legal"]
 
-    A fuzzy match is sentence whose lexical similarity with the main sentence exceeds a certain threshold. The lexical similarity is calculated as a normalized edit distance, and it can be a value between 0 to 1. The threshold that we use for a fuzzy match 0.7. The generated fuzzy matches should be grammatically correct and semantically different from the main sentence.
+    length_ranges = ["10-20","20-30","30-40"]
 
-    Output the fuzzy matches as json, using the following template:
-    
-    {template}
+    dom_len_combinations = list(itertools.product(domains,length_ranges))
 
-    There are three fuzzy types (mark the category in the file for each fuzzy):
-    1. Deletion fuzzies: Fuzzy is shorter than the main sentence, and the fuzzy is mostly identical with a part of the main sentence. Example: a deletion fuzzy for the source sentence "Turn off the device before leaving" could be "Turn off the device".
-    2.  Addition fuzzies: Fuzzy is longer than the main sentence, and a part of the fuzzy is mostly identical with the main sentence. Example: an addition fuzzy for the source sentence "Turn off the device before leaving" could be "Remember to turn off the device before leaving".
-    3. Replacement fuzzies: Fuzzy is mostly the same length as the main sentence, but part or parts of the fuzzy differ from the main sentence. Example: a replacement fuzzy for the source sentence "Turn off the device before leaving" could be "Turn off the machine before leaving" or "Deactivate the device before leaving". 
+    results = Parallel(n_jobs=8, prefer="threads")(delayed(generate_main_sentences_for_domain_and_length)(client,example_count,domain,length_range) for (domain,length_range) in dom_len_combinations)
 
-    The fuzzy matches should be as varied as possible. For instance, the fuzzies should not all start with the same phrase. Fuzzy matches must be complete and believable sentences. Fuzzies must be semantically different from the main sentence, i.e. not just paraphrases, but they must still retain lexical similarity of at least 70 percent. For instance, if there is a number in the main sentence, use a different number in the fuzzy, and if there is technical term in the main sentence, use a different technical term. 
+    sentences = []
+    generated_so_far = []
+    for result in results:
+        # Remove sentences that are too similar to each other
+        for test_case in list(result["sentences"]):
+            main_sentence = test_case["sentence"]
+            similar_existing_sentence = check_for_main_sentence_similarity(main_sentence, generated_so_far)
+            if similar_existing_sentence:
+                # Remove the test case for too mucn similarity
+                result["sentences"] = [x for x in result["sentences"] if x["sentence"] != main_sentence]
+                print(f"Too similar to existing: {main_sentence}.\nExisting: {similar_existing_sentence}")
+            else:
+                generated_so_far.append(main_sentence)
+        sentences = sentences + result['sentences']
+         
+    return sentences
 
-    Generate {example_count} fuzzies.""".format(example_count=example_count,sentence=sentence,template=template)
+def generate_deletion_fuzzies(client,sentence,num_fuzzies=5):
+    template = json.dumps({"type": "deletion","sentence": "Update to the latest version."})
+    prompt = f"Remove a semantically significant part from the following sentence while making sure the sentence remains grammatical and meaningful: {sentence}. Output {num_fuzzies} that differ from each other as much as possible. Output the sentences as JSON with the root node fuzzy_matches using the following template for each sentence: {template}"
 
     response = client.chat.completions.create(
         model="deepseek-chat",
         messages=[
             #{"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
-        ],    
+        ],  
         response_format={
             'type': 'json_object'
         },
         temperature=0,max_tokens=8000,
         stream=False
     )
-        
+
     answer = response.choices[0].message.content
-    data = json.loads(answer)
-    return data
+    return json.loads(answer)
+
+def generate_addition_fuzzies(client,sentence,num_fuzzies=5):
+    template = json.dumps({"type": "addition","sentence": "Update to the latest version."})
+    prompt = f"Add a semantically significant part (maximum length 10 percent of the sentence length) to the following sentence while making sure the sentence remains grammatical and meaningful: {sentence}. The addition should be continuous. Output {num_fuzzies} variants that differ from each other as much as possible. Output the sentences as JSON with the root node fuzzy_matches using the following template for each sentence: {template}"
+
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            #{"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ],
+        response_format={
+            'type': 'json_object'
+        },
+        temperature=0,max_tokens=8000,
+        stream=False
+    )
+
+    answer = response.choices[0].message.content
+    return json.loads(answer)
+
+def generate_replacement_fuzzies(client,sentence,num_fuzzies=5):
+    template = json.dumps({"type": "replacement","sentence": "Update to the latest version."})
+    prompt = f"Substitute a part (maximum length 10 percent of the sentence length) of the following sentence with a semantically different part while making sure the sentence remains grammatical and meaningful: {sentence}. The substitution should be continuous. Output {num_fuzzies} variants that differ from each other as much as possible. Output only the sentences without indexes. Output the sentences as JSON with the root node fuzzy_matches using the following template for each sentence: {template}"
+
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            #{"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ],
+        response_format={
+            'type': 'json_object'
+        },
+        temperature=0,max_tokens=8000,
+        stream=False
+    )
+
+    answer = response.choices[0].message.content
+    return json.loads(answer)
+
+def create_and_filter_fuzzies(client,sentence_json,num_fuzzies, fuzzy_threshold):
+    domain = sentence_json["domain"]
+    sentence = sentence_json["sentence"]
+
+    del_fuzzies = generate_deletion_fuzzies(client,sentence,num_fuzzies)
+    add_fuzzies = generate_addition_fuzzies(client,sentence,num_fuzzies)
+    repl_fuzzies = generate_replacement_fuzzies(client,sentence,num_fuzzies)
+
+    all_fuzzies = {"fuzzy_matches": del_fuzzies["fuzzy_matches"] + repl_fuzzies["fuzzy_matches"] + add_fuzzies["fuzzy_matches"]}
+
+    filtered_sentence_fuzzies = update_similarity_estimates(sentence,all_fuzzies,fuzzy_threshold)
+    filtered_sentence_fuzzies["main_sentence"] = sentence
+    filtered_sentence_fuzzies["domain"] = domain
+
+    return filtered_sentence_fuzzies
+
+"""def create_and_filter_fuzzies(client, sentence_row, num_fuzzies, fuzzy_threshold):
+    index,length,domain,sentence = sentence_row.split("|||")
+    sentence_fuzzies = generate_fuzzies(client, sentence, num_fuzzies)
+    filtered_sentence_fuzzies = update_similarity_estimates(sentence,sentence_fuzzies,fuzzy_threshold)
+    filtered_sentence_fuzzies["main_sentence"] = sentence
+    return filtered_sentence_fuzzies"""
 
 def main():
     # Initialize the argument parser
@@ -147,18 +222,12 @@ def main():
 
     main_sentences = generate_main_sentences(client, num_sentences)
 
-    data = {"examples": []}
-    for sentence_row in main_sentences.split("\n"):
-        # skip first empty row
-        if "|||" not in sentence_row:
-            continue
-        index,length,domain,sentence = sentence_row.split("|||")
-        sentence_fuzzies = generate_fuzzies(client, sentence, num_fuzzies)
-        filtered_sentence_fuzzies = update_similarity_estimates(sentence,sentence_fuzzies,fuzzy_threshold)
-        filtered_sentence_fuzzies["main_sentence"] = sentence
-        data["examples"].append(filtered_sentence_fuzzies)
+    data = {}
+    
+    results = Parallel(n_jobs=8, prefer="threads")(delayed(create_and_filter_fuzzies)(client,sentence_row,num_fuzzies,fuzzy_threshold) for sentence_row in main_sentences)
+    data["examples"] = results
 
-    with open('fuzzies.json', 'w') as json_file:
+    with open(f'phase1_and_2_{num_sentences}.json', 'w') as json_file:
         json.dump(data, json_file, indent=4)
 
 if __name__ == "__main__":

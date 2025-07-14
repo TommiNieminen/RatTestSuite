@@ -2,8 +2,8 @@ import json
 from openai import OpenAI
 import argparse
 
-def generate_terms_and_tests(client,example,num_terms=5):
-
+def generate_fuzzy_tests(client,example):
+    example = json.dumps(example)
     input_format = """
 {
       "fuzzy_matches": [
@@ -100,7 +100,7 @@ def generate_terms_and_tests(client,example,num_terms=5):
               ]
               }"""
 
-    prompt = """You are provided a JSON file of the following format:
+    prompt = """You are provided a JSON structure representing a test case with the following format:
 
     {input_format}
 
@@ -112,7 +112,11 @@ def generate_terms_and_tests(client,example,num_terms=5):
 
     A special case are surface_form_present tests where the surface form corresponds to some term translation for the main sentence. In those cases, the test should have the "term_conflict": "true" property.
 
-    }""".format(input_format=input_format,template=template)
+    Generate fuzzy tests for the following test case (make sure to preserve the target sentence in the translations):
+
+    {example}
+
+    """.format(input_format=input_format,template=template,example=example)
 
     response = client.chat.completions.create(
         model="deepseek-chat",
@@ -147,15 +151,14 @@ def main():
     # Access the arguments
     api_key = args.api_key
     test_suite_path = args.test_suite_path
-    num_terms = args.num_terms
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com/beta")
 
     with open(test_suite_path, 'r') as f:
         data = json.load(f)
 
     for example in data["examples"]:
-        terms = generate_terms_and_tests(client,example,num_terms)
-        example["terms"] = terms["terms"]
+        example_with_fuzzy_tests = generate_fuzzy_tests(client,example)
+        example["fuzzy_matches"] = example_with_fuzzy_tests["fuzzy_matches"]
 
     with open(f'with_terms_{test_suite_path}', 'w') as term_json_file:
         json.dump(data, term_json_file, indent=4)

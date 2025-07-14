@@ -1,9 +1,12 @@
 import json
 import sys
+import re
 from pathlib import Path
+from difflib import SequenceMatcher
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLabel, QCheckBox, QPushButton, QScrollArea, QMessageBox)
+                             QLabel, QCheckBox, QPushButton, QScrollArea, QMessageBox, QSizePolicy)
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QTextCursor, QTextCharFormat, QColor, QTextDocument
 
 class FuzzyMatchValidator(QMainWindow):
     def __init__(self, json_file_path):
@@ -31,10 +34,61 @@ class FuzzyMatchValidator(QMainWindow):
             json.dump(self.current_data, f, indent=2)
         QMessageBox.information(self, "Saved", f"File saved as {output_path}")
     
+    def highlight_word_differences(self, main_sentence, fuzzy_sentence):
+        # Tokenize both sentences into words (including punctuation as separate tokens)
+        main_words = re.findall(r"\w+|\s+|\W", main_sentence)
+        fuzzy_words = re.findall(r"\w+|\s+|\W", fuzzy_sentence)
+        
+        # Create a QTextDocument to format the text
+        doc = QTextDocument()
+        cursor = QTextCursor(doc)
+        
+        # Default format (for unchanged text)
+        default_format = QTextCharFormat()
+        
+        # Format for additions (light blue background)
+        add_format = QTextCharFormat()
+        add_format.setBackground(QColor(173, 216, 230))  # Light blue
+        add_format.setFontItalic(True)
+        
+        # Format for deletions (strikethrough)
+        del_format = QTextCharFormat()
+        del_format.setFontStrikeOut(True)
+        del_format.setForeground(QColor(150, 150, 150))  # Gray
+        
+        # Use SequenceMatcher to find word-level differences
+        matcher = SequenceMatcher(None, main_words, fuzzy_words)
+        
+        for op in matcher.get_opcodes():
+            tag, i1, i2, j1, j2 = op
+            
+            if tag == 'equal':
+                # Insert unchanged words with default format
+                for word in fuzzy_words[j1:j2]:
+                    cursor.insertText(word, default_format)
+            elif tag == 'insert':
+                # Insert added words with add format
+                for word in fuzzy_words[j1:j2]:
+                    cursor.insertText(word, add_format)
+            elif tag == 'delete':
+                # Insert deleted words with del format
+                for word in main_words[i1:i2]:
+                    cursor.insertText(word, del_format)
+            elif tag == 'replace':
+                # Insert deleted words from main with del format
+                for word in main_words[i1:i2]:
+                    cursor.insertText(word, del_format)
+                # Insert added words from fuzzy with add format
+                for word in fuzzy_words[j1:j2]:
+                    cursor.insertText(word, add_format)
+        
+        return doc
+    
     def init_ui(self):
         self.setWindowTitle("Fuzzy Match Validator")
-        self.setGeometry(100, 100, 2100, 1500)  # Larger window
-        
+        self.setGeometry(100, 100, 2100, 1600)  # Fixed window size
+        self.setFixedWidth(2500)  # Prevent horizontal resizing
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
@@ -68,13 +122,14 @@ class FuzzyMatchValidator(QMainWindow):
         # Fuzzy matches area
         self.scroll_area = QScrollArea()
         self.scroll_area.setStyleSheet("QScrollArea { border: 2px solid gray; }")
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # Disable horizontal scroll
         self.scroll_content = QWidget()
         self.fuzzy_layout = QVBoxLayout()
-        self.fuzzy_layout.setSpacing(20)  # Increased spacing
+        self.fuzzy_layout.setSpacing(20)
         self.scroll_content.setLayout(self.fuzzy_layout)
         self.scroll_area.setWidget(self.scroll_content)
         self.scroll_area.setWidgetResizable(True)
-        main_layout.addWidget(self.scroll_area)
+        main_layout.addWidget(self.scroll_area)        
         
         # Navigation buttons
         button_layout = QHBoxLayout()
@@ -106,6 +161,7 @@ class FuzzyMatchValidator(QMainWindow):
         
         # Initialize checkboxes list
         self.checkboxes = []
+        self.fuzzy_labels = []
     
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Delete:
@@ -123,10 +179,11 @@ class FuzzyMatchValidator(QMainWindow):
             super().keyPressEvent(event)
     
     def update_display(self):
-        # Clear previous checkboxes
+        # Clear previous widgets
         for i in reversed(range(self.fuzzy_layout.count())): 
             self.fuzzy_layout.itemAt(i).widget().setParent(None)
         self.checkboxes = []
+        self.fuzzy_labels = []
         
         if not self.current_data["examples"]:
             self.main_sentence_label.setText("No examples remaining")
@@ -138,41 +195,59 @@ class FuzzyMatchValidator(QMainWindow):
             return
         
         example = self.current_data["examples"][self.current_index]
+        main_sentence = example["main_sentence"]
         
         # Update main sentence and metadata
-        self.main_sentence_label.setText(example["main_sentence"])
+        self.main_sentence_label.setText(main_sentence)
         self.position_label.setText(f"Example {self.current_index + 1} of {len(self.current_data['examples'])}")
         
         # Add fuzzy matches with checkboxes
-        for i, fuzzy in enumerate(example["fuzzy_matches"]):
-            checkbox = QCheckBox()
+        for i, fuzzy in enumerate(example["fuzzy_matches"], start=1):  # Start index at 1
+            # Create a horizontal container for checkbox and sentence
+            container = QWidget()
+            container_layout = QHBoxLayout()
+            container.setLayout(container_layout)
+            
+            # Create checkbox with index number
+            checkbox = QCheckBox(f"{i}.")  # Add index number here
             checkbox_font = checkbox.font()
             checkbox_font.setPointSize(checkbox_font.pointSize())
             checkbox.setFont(checkbox_font)
-            
-            checkbox_text = f"{i+1}. {fuzzy['type'].capitalize()}: {fuzzy['sentence']} (similarity: {fuzzy['similarity_estimate']:.2f})"
-            checkbox.setText(checkbox_text)
             checkbox.setChecked(fuzzy.get("validated", False))
             
-            # Make checkbox larger
             checkbox.setStyleSheet("""
                 QCheckBox {
                     spacing: 15px;
-                    margin: 10px;
+                    margin-right: 10px;
+                    min-width: 40px;
                 }
                 QCheckBox::indicator {
-                    width: 60px;
-                    height: 60px;
+                    width: 30px;
+                    height: 30px;
                 }
             """)
             
-            self.fuzzy_layout.addWidget(checkbox)
+            container_layout.addWidget(checkbox)
             self.checkboxes.append(checkbox)
-        
-        # Update button states
-        self.back_button.setEnabled(self.current_index > 0)
-        self.forward_button.setEnabled(self.current_index < len(self.current_data["examples"]) - 1)
-        self.delete_button.setEnabled(True)
+            
+            # Create label for the highlighted differences with proper wrapping
+            fuzzy_label = QLabel()
+            fuzzy_label.setWordWrap(True)
+            fuzzy_label_font = fuzzy_label.font()
+            fuzzy_label_font.setPointSize(fuzzy_label_font.pointSize())
+            fuzzy_label.setFont(fuzzy_label_font)
+            fuzzy_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            
+            # Highlight word-level differences
+            doc = self.highlight_word_differences(main_sentence, fuzzy['sentence'])
+            fuzzy_label.setText(doc.toHtml())
+            
+            # Add stretchable spacer to ensure proper wrapping
+            container_layout.addWidget(fuzzy_label, stretch=1)
+            self.fuzzy_labels.append(fuzzy_label)
+            
+            # Add the container to the main layout
+            self.fuzzy_layout.addWidget(container)   
     
     def save_current_selections(self):
         if not self.current_data["examples"]:
