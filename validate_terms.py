@@ -2,7 +2,8 @@ import json
 import sys
 from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLabel, QCheckBox, QPushButton, QScrollArea, QMessageBox, QGroupBox)
+                             QLabel, QCheckBox, QPushButton, QScrollArea, QMessageBox, 
+                             QGroupBox, QLineEdit)
 from PyQt5.QtCore import Qt, QTimer
 
 class TermValidator(QMainWindow):
@@ -19,7 +20,7 @@ class TermValidator(QMainWindow):
         
         # Set larger default font size
         self.default_font = self.font()
-        self.default_font.setPointSize(self.default_font.pointSize() + 6)
+        self.default_font.setPointSize(self.default_font.pointSize() + 4)  # Reduced from +6
         self.setFont(self.default_font)
         
         self.init_ui()
@@ -68,7 +69,7 @@ class TermValidator(QMainWindow):
     
     def init_ui(self):
         self.setWindowTitle("Term Translation Validator")
-        self.setGeometry(100, 100, 2400, 1600)
+        self.setGeometry(100, 100, 1800, 1200)  # Reduced window size
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -79,14 +80,14 @@ class TermValidator(QMainWindow):
         # Main sentence display
         self.main_sentence_label = QLabel()
         main_sentence_font = self.main_sentence_label.font()
-        main_sentence_font.setPointSize(main_sentence_font.pointSize() + 8)
+        main_sentence_font.setPointSize(main_sentence_font.pointSize())
         self.main_sentence_label.setFont(main_sentence_font)
         self.main_sentence_label.setStyleSheet("""
             font-weight: bold; 
-            margin-bottom: 30px;
-            padding: 15px;
+            margin-bottom: 15px;
+            padding: 10px;
             background-color: #f0f0f0;
-            border-radius: 10px;
+            border-radius: 8px;
         """)
         self.main_sentence_label.setWordWrap(True)
         main_layout.addWidget(self.main_sentence_label)
@@ -95,14 +96,14 @@ class TermValidator(QMainWindow):
         self.scroll_area = QScrollArea()
         self.scroll_area.setStyleSheet("""
             QScrollArea { 
-                border: 2px solid gray;
-                border-radius: 10px;
+                border: 1px solid gray;
+                border-radius: 5px;
             }
         """)
         self.scroll_content = QWidget()
         self.terms_layout = QVBoxLayout()
-        self.terms_layout.setSpacing(25)
-        self.terms_layout.setContentsMargins(15, 15, 15, 15)
+        self.terms_layout.setSpacing(5)  # Reduced from 25
+        self.terms_layout.setContentsMargins(10, 10, 10, 10)  # Reduced from 15
         self.scroll_content.setLayout(self.terms_layout)
         self.scroll_area.setWidget(self.scroll_content)
         self.scroll_area.setWidgetResizable(True)
@@ -113,21 +114,21 @@ class TermValidator(QMainWindow):
         self.status_label.setStyleSheet("""
             color: #555555; 
             font-style: italic;
-            font-size: 16px;
-            padding: 10px;
+            font-size: 14px;
+            padding: 8px;
         """)
         main_layout.addWidget(self.status_label)
         
         # Navigation buttons
         button_layout = QHBoxLayout()
-        button_layout.setSpacing(30)
+        button_layout.setSpacing(15)  # Reduced from 30
         
         self.back_button = QPushButton("← Back (b)")
         self.back_button.setStyleSheet("""
             QPushButton {
-                font-size: 18px;
-                padding: 15px;
-                min-width: 150px;
+                font-size: 16px;
+                padding: 10px;
+                min-width: 120px;
             }
         """)
         self.back_button.clicked.connect(self.prev_example)
@@ -136,9 +137,9 @@ class TermValidator(QMainWindow):
         self.forward_button = QPushButton("Forward (f) →")
         self.forward_button.setStyleSheet("""
             QPushButton {
-                font-size: 18px;
-                padding: 15px;
-                min-width: 150px;
+                font-size: 16px;
+                padding: 10px;
+                min-width: 120px;
             }
         """)
         self.forward_button.clicked.connect(self.next_example)
@@ -147,22 +148,22 @@ class TermValidator(QMainWindow):
         self.delete_button = QPushButton("🗑 Delete (Del)")
         self.delete_button.setStyleSheet("""
             QPushButton {
-                font-size: 18px;
-                padding: 15px;
-                min-width: 150px;
+                font-size: 16px;
+                padding: 10px;
+                min-width: 120px;
                 background-color: #ffcccc;
                 font-weight: bold;
             }
         """)
-        self.delete_button.clicked.connect(self.delete_current_example)  # Removed confirm_delete
+        self.delete_button.clicked.connect(self.delete_current_example)
         button_layout.addWidget(self.delete_button)
         
         self.save_button = QPushButton("💾 Save")
         self.save_button.setStyleSheet("""
             QPushButton {
-                font-size: 18px;
-                padding: 15px;
-                min-width: 150px;
+                font-size: 16px;
+                padding: 10px;
+                min-width: 120px;
                 background-color: #ccffcc;
                 font-weight: bold;
             }
@@ -171,6 +172,7 @@ class TermValidator(QMainWindow):
         button_layout.addWidget(self.save_button)
         
         main_layout.addLayout(button_layout)
+
     def update_display(self):
         # Clear previous widgets
         for i in reversed(range(self.terms_layout.count())): 
@@ -206,37 +208,36 @@ class TermValidator(QMainWindow):
                 term_group.setStyleSheet("""
                     QGroupBox { 
                         font-weight: bold; 
-                        font-size: 18px;
-                        margin-top: 15px;
+                        font-size: 32x;
+                        margin-top: 0px;
                     }
                     QGroupBox::title {
                         subcontrol-origin: margin;
-                        left: 10px;
-                        padding: 0 5px;
+                        left: 5px;
+                        padding: 0 3px;
                     }
                 """)
                 term_layout = QVBoxLayout()
-                term_layout.setSpacing(15)
+                term_layout.setSpacing(4)  # Reduced from 15
                 
                 for trans_idx, translation in enumerate(translations):
                     hbox = QHBoxLayout()
-                    hbox.setSpacing(20)
+                    hbox.setSpacing(0)  # Reduced from 20
                     
                     # Add translation index (1-9)
                     index_label = QLabel(f"{trans_idx+1}.")
-                    index_label.setFixedWidth(40)
+                    index_label.setFixedWidth(30)  # Reduced from 40
                     index_font = index_label.font()
-                    index_font.setPointSize(16)
+                    index_font.setPointSize(12)  # Reduced from 16
                     index_label.setFont(index_font)
                     hbox.addWidget(index_label)
                     
                     checkbox = QCheckBox()
-                    # Get the saved state from current_data
                     checkbox.setChecked(translation.get('selected', False))
                     checkbox.setStyleSheet("""
                         QCheckBox::indicator {
-                            width: 30px;
-                            height: 30px;
+                            width: 20px;
+                            height: 20px;
                         }
                     """)
                     
@@ -247,40 +248,20 @@ class TermValidator(QMainWindow):
                     # Connect checkbox state change
                     checkbox.stateChanged.connect(self.update_translation_selection)
                     
-                    # Create widget for translation and test
-                    trans_test_widget = QWidget()
-                    trans_test_layout = QVBoxLayout()
-                    trans_test_layout.setSpacing(5)
-                    
-                    # Translation label
-                    target_label = QLabel(translation['target'])
-                    target_label.setWordWrap(True)
-                    target_font = target_label.font()
-                    target_font.setPointSize(16)
-                    target_label.setFont(target_font)
-                    trans_test_layout.addWidget(target_label)
-                    
-                    # Test label (if tests exist)
-                    if 'tests' in translation and translation['tests']:
-                        test_label = QLabel()
-                        test_label.setWordWrap(True)
-                        test_font = test_label.font()
-                        test_font.setPointSize(14)
-                        test_label.setFont(test_font)
-                        test_label.setStyleSheet("color: #666666; font-style: italic;")
-                        
-                        test_texts = []
-                        for test in translation['tests']:
-                            if test['type'] == 'term_present':
-                                test_texts.append(f"Must contain: {test['condition']}")
-                        
-                        test_label.setText("\n".join(test_texts))
-                        trans_test_layout.addWidget(test_label)
-                    
-                    trans_test_widget.setLayout(trans_test_layout)
+                    # Create editable translation field
+                    trans_edit = QLineEdit(translation['target'])
+                    trans_edit.setStyleSheet("""
+                        QLineEdit {
+                            font-size: 28px;
+                            padding: 0px;
+                        }
+                    """)
+                    trans_edit.term_idx = term_idx
+                    trans_edit.trans_idx = trans_idx
+                    trans_edit.textChanged.connect(self.update_translation_text)
                     
                     hbox.addWidget(checkbox)
-                    hbox.addWidget(trans_test_widget, 1)
+                    hbox.addWidget(trans_edit, 1)
                     
                     container = QWidget()
                     container.setLayout(hbox)
@@ -303,6 +284,22 @@ class TermValidator(QMainWindow):
         self.selected_term_index = None
         self.current_term_scroll_index = 0
         self.scroll_to_current_term()
+
+    def update_translation_text(self, text):
+        line_edit = self.sender()
+        term_idx = line_edit.term_idx
+        trans_idx = line_edit.trans_idx
+        
+        examples = self.current_data.get('examples', [])
+        if examples and self.current_index < len(examples):
+            current_example = examples[self.current_index]
+            if 'terms' in current_example:
+                term_keys = list(current_example['terms'].keys())
+                if term_idx < len(term_keys):
+                    term = term_keys[term_idx]
+                    translations = current_example['terms'][term]
+                    if trans_idx < len(translations):
+                        translations[trans_idx]['target'] = text
 
     def update_translation_selection(self, state):
         checkbox = self.sender()
@@ -418,7 +415,7 @@ if __name__ == "__main__":
     
     # Set larger font for the entire application
     font = app.font()
-    font.setPointSize(font.pointSize() + 4)
+    font.setPointSize(font.pointSize() + 2)  # Reduced from +4
     app.setFont(font)
     
     validator = TermValidator(sys.argv[1])

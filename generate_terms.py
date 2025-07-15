@@ -1,6 +1,7 @@
 import json
 from openai import OpenAI
 import argparse
+from joblib import Parallel, delayed
 
 def generate_terms_and_tests(client,example,num_terms=5):
 
@@ -85,7 +86,7 @@ def generate_terms_and_tests(client,example,num_terms=5):
         
     answer = response.choices[0].message.content
     data = json.loads(answer)
-    return data
+    example["terms"] = data["terms"]
 
 def main():
     # Initialize the argument parser
@@ -111,9 +112,7 @@ def main():
     with open(test_suite_path, 'r') as f:
         data = json.load(f)
 
-    for example in data["examples"]:
-        terms = generate_terms_and_tests(client,example,num_terms)
-        example["terms"] = terms["terms"]
+    results = Parallel(n_jobs=8, prefer="threads")(delayed(generate_terms_and_tests)(client,example,num_terms) for example in data["examples"])
 
     with open(f'with_terms_{test_suite_path}', 'w') as term_json_file:
         json.dump(data, term_json_file, indent=4)
