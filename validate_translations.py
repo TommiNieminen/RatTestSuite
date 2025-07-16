@@ -1,321 +1,328 @@
 import json
-import sys
-from pathlib import Path
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLabel, QCheckBox, QPushButton, QScrollArea, QMessageBox)
-from PyQt5.QtCore import Qt
+import os
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+                             QLabel, QLineEdit, QPushButton, QScrollArea, QCheckBox, 
+                             QFileDialog, QMessageBox, QGridLayout, QTextEdit, QFrame,QShortcut)
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QKeySequence
 
 class TranslationValidator(QMainWindow):
-    def __init__(self, json_file_path, text_file_path):
+    check_translation_signal = pyqtSignal(int, int)
+    
+    def __init__(self):
         super().__init__()
-        self.json_file_path = Path(json_file_path)
-        self.text_file_path = Path(text_file_path)
-        self.original_data = self.load_json()
-        self.current_data = json.loads(json.dumps(self.original_data))  # Deep copy
-        self.translations = self.load_translations()
-        self.current_index = 0
+        self.setWindowTitle("Translation Validator")
+        self.resize(2100, 1500)  # Twice as wide, 1.5x as tall
         
-        # Set larger default font size
-        self.default_font = self.font()
-        self.default_font.setPointSize(self.default_font.pointSize() + 4)
-        self.setFont(self.default_font)
+        self.data = None
+        self.current_index = 0
+        self.filename = ""
+        self.fuzzy_input_mode = False
+        self.current_fuzzy_num = 0
+        self.current_trans_num = 0
         
         self.init_ui()
-        self.update_display()
+        self.load_file()
         
-    def load_json(self):
-        with open(self.json_file_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    
-    def load_translations(self):
-        translations = []
-        with open(self.text_file_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                parts = [part.strip() for part in line.split('|||')]
-                if len(parts) >= 2:
-                    sentence = parts[0]
-                    translations_list = parts[1:]
-                    translations.append({
-                        'sentence': sentence,
-                        'translations': translations_list
-                    })
-        return translations
-    
-    def save_json(self):
-        output_path = self.json_file_path.parent / f"translated_{self.json_file_path.name}"
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(self.current_data, f, indent=2, ensure_ascii=False)
-        QMessageBox.information(self, "Saved", f"File saved as {output_path}")
-    
-    def delete_current_example(self):
-        current_sentence = self.translations[self.current_index]['sentence']
-        
-        # Find and remove all examples with matching main_sentence
-        self.current_data['examples'] = [
-            example for example in self.current_data.get('examples', [])
-            if example.get('main_sentence') != current_sentence
-        ]
-        
-        # Also remove from fuzzy matches in remaining examples
-        for example in self.current_data.get('examples', []):
-            example['fuzzy_matches'] = [
-                fuzzy for fuzzy in example.get('fuzzy_matches', [])
-                if fuzzy.get('sentence') != current_sentence
-            ]
-        
-        # Remove from translations list and update display
-        del self.translations[self.current_index]
-        if self.current_index >= len(self.translations):
-            self.current_index = max(0, len(self.translations) - 1)
-        self.update_display()
-    
     def init_ui(self):
-        self.setWindowTitle("Translation Validator")
-        self.setGeometry(100, 100, 2100, 1500)  # Larger window
-        
+        # Central widget and main layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
+        self.main_layout = QVBoxLayout(central_widget)
+        self.main_layout.setContentsMargins(20, 20, 20, 20)
         
-        main_layout = QVBoxLayout()
-        central_widget.setLayout(main_layout)
-        
+
         # Main sentence display
-        self.main_sentence_label = QLabel()
-        main_sentence_font = self.main_sentence_label.font()
-        main_sentence_font.setPointSize(main_sentence_font.pointSize() + 4)
-        self.main_sentence_label.setFont(main_sentence_font)
-        self.main_sentence_label.setStyleSheet("font-weight: bold; margin-bottom: 30px;")
-        self.main_sentence_label.setWordWrap(True)
-        main_layout.addWidget(self.main_sentence_label)
+        self.main_sentence_label = QLabel("Main Sentence:")
+        self.main_sentence_label.setStyleSheet("font-weight: bold; font-size: 32px;")
+        self.main_layout.addWidget(self.main_sentence_label)
         
-        # Translations area
+        self.main_sentence_text = QLineEdit()
+        self.main_sentence_text.setReadOnly(True)
+        self.main_sentence_text.setStyleSheet("font-size: 32px;")
+        self.main_layout.addWidget(self.main_sentence_text)
+        
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        self.main_layout.addWidget(separator)
+        
+        # Fuzzy matches scroll area
         self.scroll_area = QScrollArea()
-        self.scroll_area.setStyleSheet("QScrollArea { border: 2px solid gray; }")
-        self.scroll_content = QWidget()
-        self.translations_layout = QVBoxLayout()
-        self.translations_layout.setSpacing(20)  # Increased spacing
-        self.scroll_content.setLayout(self.translations_layout)
-        self.scroll_area.setWidget(self.scroll_content)
         self.scroll_area.setWidgetResizable(True)
-        main_layout.addWidget(self.scroll_area)
+        self.scroll_content = QWidget()
+        self.scroll_layout = QVBoxLayout(self.scroll_content)
+        self.scroll_layout.setContentsMargins(0, 0, 20, 0)  # Right margin for scrollbar
+        self.scroll_area.setWidget(self.scroll_content)
+        self.main_layout.addWidget(self.scroll_area, 1)
         
-        # Navigation buttons
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(30)  # Increased spacing
+        # Status label for input mode
+        self.status_label = QLabel("Press a number to select fuzzy match")
+        self.status_label.setStyleSheet("font-style: italic; color: #555;")
+        self.main_layout.addWidget(self.status_label)
         
-        self.back_button = QPushButton("← Back")
-        self.back_button.setMinimumHeight(60)  # Larger button
-        self.back_button.clicked.connect(self.prev_example)
-        button_layout.addWidget(self.back_button)
+
+        self.reset_input_mode()
+
+
+        # Button layout
+        self.button_layout = QHBoxLayout()
+        self.button_layout.setSpacing(20)
         
-        self.forward_button = QPushButton("Forward →")
-        self.forward_button.setMinimumHeight(60)  # Larger button
-        self.forward_button.clicked.connect(self.next_example)
-        button_layout.addWidget(self.forward_button)
+        self.back_btn = QPushButton("Back (B)")
+        self.back_btn.setStyleSheet("min-width: 100px;")
+        self.back_btn.clicked.connect(self.previous_example)
+        self.button_layout.addWidget(self.back_btn)
         
-        self.delete_button = QPushButton("🗑 Delete")
-        self.delete_button.setMinimumHeight(60)  # Larger button
-        self.delete_button.clicked.connect(self.confirm_delete)
-        self.delete_button.setStyleSheet("background-color: #ffcccc; font-weight: bold;")
-        button_layout.addWidget(self.delete_button)
+        self.forward_btn = QPushButton("Forward (F)")
+        self.forward_btn.setStyleSheet("min-width: 100px;")
+        self.forward_btn.clicked.connect(self.next_example)
+        self.button_layout.addWidget(self.forward_btn)
         
-        self.save_button = QPushButton("💾 Save")
-        self.save_button.setMinimumHeight(60)  # Larger button
-        self.save_button.clicked.connect(self.save_json)
-        self.save_button.setStyleSheet("background-color: #ccffcc; font-weight: bold;")
-        button_layout.addWidget(self.save_button)
+        self.delete_btn = QPushButton("Delete (Del)")
+        self.delete_btn.setStyleSheet("min-width: 100px;")
+        self.delete_btn.clicked.connect(self.delete_example)
+        self.button_layout.addWidget(self.delete_btn)
         
-        main_layout.addLayout(button_layout)
+        self.button_layout.addStretch(1)
         
-        # Initialize checkboxes list
-        self.checkboxes = []
+        self.save_btn = QPushButton("Save")
+        self.save_btn.setStyleSheet("min-width: 100px; font-weight: bold;")
+        self.save_btn.clicked.connect(self.save_data)
+        self.button_layout.addWidget(self.save_btn)
+        
+        self.main_layout.addLayout(self.button_layout)
+        
+        # Keyboard shortcuts
+        for num in range(1, 10):
+            QShortcut(QKeySequence(str(num)), self, lambda n=num: self.handle_number_input(n))
+            
+        QShortcut(QKeySequence("B"), self, self.previous_example)
+        QShortcut(QKeySequence("F"), self, self.next_example)
+        QShortcut(QKeySequence(Qt.Key_Delete), self, self.delete_example)
+        
+        # Connect signal for checking translations
+        self.check_translation_signal.connect(self.check_translation)
+        
+    def handle_number_input(self, number):
+        if not self.fuzzy_input_mode and not self.trans_input_mode:
+            self.fuzzy_input_mode = True
+            self.current_fuzzy_num = number
+            self.update_status_label()
+            
+            # Scroll to the selected fuzzy match
+            if 1 <= number <= len(self.fuzzy_match_widgets):
+                widget = self.fuzzy_match_widgets[number-1]
+                self.scroll_area.ensureWidgetVisible(widget)
+        elif self.fuzzy_input_mode:
+            self.trans_input_mode = True
+            self.current_trans_num = number
+            self.update_status_label()
+            self.check_translation_signal.emit(self.current_fuzzy_num, self.current_trans_num)
+            self.reset_input_mode()
+            
+    def reset_input_mode(self):
+        self.fuzzy_input_mode = False
+        self.trans_input_mode = False
+        self.current_fuzzy_num = 0
+        self.current_trans_num = 0
+        self.update_status_label()
+        self.fuzzy_match_widgets = []  # Clear references when moving to new example
+        
+    def update_status_label(self):
+        if self.fuzzy_input_mode:
+            self.status_label.setText(f"Enter translation number for fuzzy match {self.current_fuzzy_num}")
+        elif self.trans_input_mode:
+            self.status_label.setText(f"Checking translation {self.current_trans_num} of fuzzy match {self.current_fuzzy_num}")
+        else:
+            self.status_label.setText("Press a number to select fuzzy match")
+            
+    def check_translation(self, fuzzy_num, trans_num):
+        example = self.data["examples"][self.current_index]
+        fuzzy_matches = [m for m in example.get("fuzzy_matches", []) if m.get("translations")]
+        
+        if 1 <= fuzzy_num <= len(fuzzy_matches):
+            fuzzy_match = fuzzy_matches[fuzzy_num - 1]
+            translations = fuzzy_match.get("translations", [])
+            
+            if 1 <= trans_num <= len(translations):
+                translation = translations[trans_num - 1]
+                checkbox = translation.get("checkbox")
+                if checkbox:
+                    checkbox.setChecked(not checkbox.isChecked())
+                    translation["validated"] = checkbox.isChecked()
+                    
+    def load_file(self):
+        filename, _ = QFileDialog.getOpenFileName(self, "Open JSON File", "", "JSON Files (*.json)")
+        if not filename:
+            self.close()
+            return
+            
+        self.filename = os.path.basename(filename)
+        
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                self.data = json.load(f)
+            self.show_example()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load file: {str(e)}")
+            self.close()
+            
+    def update_translation_text(self, translation, widget):
+        """Update JSON data directly when translation text changes"""
+        translation["target"] = widget.toPlainText()
+
+    def show_example(self):
+        # Clear previous widgets
+        while self.scroll_layout.count():
+            child = self.scroll_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+                
+        if not self.data or not self.data.get("examples"):
+            return
+            
+        example = self.data["examples"][self.current_index]
+        
+        # Display main sentence
+        self.main_sentence_text.setText(example.get("main_sentence", ""))
+        
+        # Display only fuzzy matches with translations
+        fuzzy_matches = [m for m in example.get("fuzzy_matches", []) if m.get("translations")]
+        
+        self.fuzzy_match_widgets = []  # Store references to fuzzy match widgets
     
-    def confirm_delete(self):
+        for i, match in enumerate(fuzzy_matches):
+            match_group = QWidget()
+            self.fuzzy_match_widgets.append(match_group)  # Store reference
+            match_layout = QVBoxLayout(match_group)
+            match_layout.setContentsMargins(0, 10, 0, 10)
+            
+            # Match sentence
+            sentence_label = QLabel(f"{i+1}. Fuzzy Match:")
+            sentence_label.setStyleSheet("font-weight: bold; font-size: 32px;")
+            match_layout.addWidget(sentence_label)
+            
+            sentence_text = QLineEdit()
+            sentence_text.setText(match.get("sentence", ""))
+            sentence_text.setReadOnly(True)
+            sentence_text.setStyleSheet("font-size: 32px;")
+            match_layout.addWidget(sentence_text)
+            
+            translations_grid = QGridLayout()
+            translations_grid.setHorizontalSpacing(15)
+            translations_grid.setVerticalSpacing(5)
+            translations_grid.setColumnStretch(0, 0)  # Number label - don't stretch
+            translations_grid.setColumnStretch(1, 0)  # Checkbox - don't stretch
+            translations_grid.setColumnStretch(2, 1)  # Translation text - stretch to fill space
+            
+            for j, translation in enumerate(match.get("translations", [])):
+                # Number label
+                num_label = QLabel(f"{j+1}.")
+                num_label.setStyleSheet("font-size: 32px;")
+                translations_grid.addWidget(num_label, j, 0)
+                
+                # Checkbox for validation
+                checkbox = QCheckBox()
+                checkbox.setChecked(translation.get("validated", False))
+                checkbox.stateChanged.connect(lambda state, t=translation: self.update_validation(t, state))
+                translations_grid.addWidget(checkbox, j, 1)
+                
+                # Translation text
+                trans_text = QTextEdit()
+                trans_text.setPlainText(translation.get("target", ""))
+                trans_text.setFixedHeight(trans_text.fontMetrics().lineSpacing() * 3)
+                trans_text.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+                trans_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+                trans_text.setStyleSheet("""
+                    QTextEdit {
+                        font-size: 32px;
+                        border: 1px solid #ccc;
+                        padding: 2px;
+                    }
+                """)
+                # Connect textChanged signal to update data directly
+                trans_text.textChanged.connect(
+                    lambda t=translation, w=trans_text: self.update_translation_text(t, w)
+                )
+                translations_grid.addWidget(trans_text, j, 2)
+
+                # Only store checkbox reference (no longer store widget)
+                translation["checkbox"] = checkbox
+                        
+            match_layout.addLayout(translations_grid)
+            self.scroll_layout.addWidget(match_group)
+            
+        # Add stretch to push content up
+        self.scroll_layout.addStretch()
+        self.update_status_label()
+
+    def update_validation(self, translation, state):
+        translation["validated"] = state == Qt.Checked
+        
+    def previous_example(self):
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.reset_input_mode()
+            self.show_example()
+            
+    def next_example(self):
+        if self.data and self.current_index < len(self.data["examples"]) - 1:
+            self.current_index += 1
+            self.reset_input_mode()
+            self.show_example()
+            
+    def delete_example(self):
+        if not self.data or not self.data.get("examples"):
+            return
+            
         reply = QMessageBox.question(
-            self, 'Delete Example',
-            "Are you sure you want to delete this example and all its fuzzy matches?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            self, 
+            "Delete Example", 
+            "Are you sure you want to delete this example?",
+            QMessageBox.Yes | QMessageBox.No
         )
         
         if reply == QMessageBox.Yes:
-            self.delete_current_example()
-    
-    def update_display(self):
-        # Clear previous checkboxes
-        for i in reversed(range(self.translations_layout.count())): 
-            self.translations_layout.itemAt(i).widget().setParent(None)
-        self.checkboxes = []
-        
-        if not self.translations:
-            self.main_sentence_label.setText("No translations loaded")
-            self.back_button.setEnabled(False)
-            self.forward_button.setEnabled(False)
-            self.save_button.setEnabled(False)
-            self.delete_button.setEnabled(False)
+            del self.data["examples"][self.current_index]
+            
+            if self.current_index >= len(self.data["examples"]):
+                self.current_index = max(0, len(self.data["examples"]) - 1)
+                
+            self.show_example()
+            
+    def save_data(self):
+        if not self.data:
             return
+            
+        # Update translations from checkboxes only
+        for example in self.data["examples"]:
+            for match in example.get("fuzzy_matches", []):
+                for translation in match.get("translations", []):
+                    if "checkbox" in translation:
+                        translation["validated"] = translation["checkbox"].isChecked()
+                        del translation["checkbox"]  # Clean up only checkbox reference
+                                
+        # Save to file
+        save_filename = f"translations_validated_{self.filename}"
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Validated Translations",
+            save_filename,
+            "JSON Files (*.json)"
+        )
         
-        current_item = self.translations[self.current_index]
-        
-        # Update main sentence
-        self.main_sentence_label.setText(current_item['sentence'])
-        
-        # Add translations with checkboxes
-        for idx, translation in enumerate(current_item['translations']):
-            hbox = QHBoxLayout()
-            
-            # Add index number (1-9)
-            index_label = QLabel(f"{idx+1}.")
-            index_label.setFixedWidth(40)
-            index_font = index_label.font()
-            index_font.setPointSize(index_font.pointSize() + 2)
-            index_label.setFont(index_font)
-            hbox.addWidget(index_label)
-            
-            checkbox = QCheckBox()
-            checkbox_font = checkbox.font()
-            checkbox_font.setPointSize(checkbox_font.pointSize() + 2)
-            checkbox.setFont(checkbox_font)
-            
-            # Store the translation text in the checkbox object
-            checkbox.translation_text = translation
-            
-            translation_label = QLabel(translation)
-            translation_label.setWordWrap(True)
-            translation_label.setFont(checkbox_font)
-            
-            # Make checkbox larger
-            checkbox.setStyleSheet("""
-                QCheckBox::indicator {
-                    width: 30px;
-                    height: 30px;
-                }
-            """)
-            
-            # Connect checkbox state change to update JSON
-            checkbox.stateChanged.connect(lambda state, cb=checkbox: self.update_translation_in_json(cb))
-            
-            hbox.addWidget(checkbox)
-            hbox.addWidget(translation_label, 1)
-            
-            container = QWidget()
-            container.setLayout(hbox)
-            self.translations_layout.addWidget(container)
-            self.checkboxes.append(checkbox)
-            
-            # Set initial checkbox state based on existing translations
-            self.set_initial_checkbox_state(checkbox, current_item['sentence'])
-        
-        # Update button states
-        self.back_button.setEnabled(self.current_index > 0)
-        self.forward_button.setEnabled(self.current_index < len(self.translations) - 1)
-        self.save_button.setEnabled(True)
-        self.delete_button.setEnabled(True)
-    
-    def set_initial_checkbox_state(self, checkbox, sentence):
-        # Check if this translation already exists in the JSON data
-        for example in self.current_data.get('examples', []):
-            # Check main sentence
-            if example.get('main_sentence') == sentence:
-                if 'translations' in example:
-                    for trans in example['translations']:
-                        if trans.get('target') == checkbox.translation_text:
-                            checkbox.setChecked(True)
-                            return
-                break
-            
-            # Check fuzzy matches
-            for fuzzy in example.get('fuzzy_matches', []):
-                if fuzzy.get('sentence') == sentence:
-                    if 'translations' in fuzzy:
-                        for trans in fuzzy['translations']:
-                            if trans.get('target') == checkbox.translation_text:
-                                checkbox.setChecked(True)
-                                return
-                    break
-    
-    def update_translation_in_json(self, checkbox):
-        current_sentence = self.translations[self.current_index]['sentence']
-        translation = checkbox.translation_text
-        
-        # Find all matching sentences in the JSON data
-        for example in self.current_data.get('examples', []):
-            # Check main sentence
-            if example.get('main_sentence') == current_sentence:
-                if checkbox.isChecked():
-                    if 'translations' not in example:
-                        example['translations'] = []
-                    # Check if this translation already exists
-                    if not any(t.get('target') == translation for t in example['translations']):
-                        example['translations'].append({'target': translation})
-                else:
-                    if 'translations' in example:
-                        example['translations'] = [
-                            t for t in example['translations']
-                            if t.get('target') != translation
-                        ]
-                        if not example['translations']:
-                            del example['translations']
-                break
-            
-            # Check fuzzy matches
-            for fuzzy in example.get('fuzzy_matches', []):
-                if fuzzy.get('sentence') == current_sentence:
-                    if checkbox.isChecked():
-                        if 'translations' not in fuzzy:
-                            fuzzy['translations'] = []
-                        # Check if this translation already exists
-                        if not any(t.get('target') == translation for t in fuzzy['translations']):
-                            fuzzy['translations'].append({'target': translation})
-                    else:
-                        if 'translations' in fuzzy:
-                            fuzzy['translations'] = [
-                                t for t in fuzzy['translations']
-                                if t.get('target') != translation
-                            ]
-                            if not fuzzy['translations']:
-                                del fuzzy['translations']
-                    break
-    
-    def keyPressEvent(self, event):
-        # Handle number keys 1-9 to toggle checkboxes
-        if event.key() >= Qt.Key_1 and event.key() <= Qt.Key_9:
-            index = event.key() - Qt.Key_1
-            if index < len(self.checkboxes):
-                checkbox = self.checkboxes[index]
-                checkbox.setChecked(not checkbox.isChecked())
-        elif event.key() == Qt.Key_B:
-            if self.current_index > 0:
-                self.prev_example()
-        elif event.key() == Qt.Key_F:
-            if self.current_index < len(self.translations) - 1:
-                self.next_example()
-        elif event.key() == Qt.Key_Delete:
-            self.confirm_delete()
-        else:
-            super().keyPressEvent(event)
-    
-    def prev_example(self):
-        self.current_index -= 1
-        self.update_display()
-    
-    def next_example(self):
-        self.current_index += 1
-        self.update_display()
-
+        if save_path:
+            try:
+                with open(save_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.data, f, ensure_ascii=False, indent=2)
+                QMessageBox.information(self, "Saved", f"File saved as {save_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save file: {str(e)}")
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python translation_validator.py <json_file> <text_file>")
-        print("Text file format: sentence ||| translation1 ||| translation2...")
-        sys.exit(1)
-    
-    app = QApplication(sys.argv)
-    
-    # Set larger font for the entire application
-    font = app.font()
-    font.setPointSize(font.pointSize() + 4)
-    app.setFont(font)
-    
-    validator = TranslationValidator(sys.argv[1], sys.argv[2])
-    validator.show()
-    sys.exit(app.exec_())
+    app = QApplication([])
+    window = TranslationValidator()
+    window.show()
+    app.exec_()
