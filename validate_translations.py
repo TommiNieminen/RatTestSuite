@@ -116,19 +116,17 @@ class TranslationValidator(QMainWindow):
                 widget = self.fuzzy_match_widgets[number-1]
                 self.scroll_area.ensureWidgetVisible(widget)
         elif self.fuzzy_input_mode:
-            self.trans_input_mode = True
-            self.current_trans_num = number
-            self.update_status_label()
-            self.check_translation_signal.emit(self.current_fuzzy_num, self.current_trans_num)
-            self.reset_input_mode()
+            self.check_translation(self.current_fuzzy_num, number)
+            self.reset_input_mode(new_example=False)
             
-    def reset_input_mode(self):
+    def reset_input_mode(self,new_example=True):
         self.fuzzy_input_mode = False
         self.trans_input_mode = False
         self.current_fuzzy_num = 0
         self.current_trans_num = 0
         self.update_status_label()
-        self.fuzzy_match_widgets = []  # Clear references when moving to new example
+        if new_example:
+            self.fuzzy_match_widgets = []  # Clear references when moving to new example
         
     def update_status_label(self):
         if self.fuzzy_input_mode:
@@ -148,10 +146,15 @@ class TranslationValidator(QMainWindow):
             
             if 1 <= trans_num <= len(translations):
                 translation = translations[trans_num - 1]
-                checkbox = translation.get("checkbox")
-                if checkbox:
-                    checkbox.setChecked(not checkbox.isChecked())
-                    translation["validated"] = checkbox.isChecked()
+                # Toggle the validated state directly in data
+                translation["validated"] = not translation.get("validated", False)
+                
+                # Update checkbox if it exists (for current view)
+                if hasattr(self, 'fuzzy_match_widgets'):
+                    match_group = self.fuzzy_match_widgets[fuzzy_num-1]
+                    checkboxes = match_group.findChildren(QCheckBox)
+                    if trans_num-1 < len(checkboxes):
+                        checkboxes[trans_num-1].setChecked(translation["validated"])
                     
     def load_file(self):
         filename, _ = QFileDialog.getOpenFileName(self, "Open JSON File", "", "JSON Files (*.json)")
@@ -226,7 +229,10 @@ class TranslationValidator(QMainWindow):
                 # Checkbox for validation
                 checkbox = QCheckBox()
                 checkbox.setChecked(translation.get("validated", False))
-                checkbox.stateChanged.connect(lambda state, t=translation: self.update_validation(t, state))
+                # Connect directly to data update
+                checkbox.stateChanged.connect(
+                    lambda state, t=translation: t.update({"validated": state == Qt.Checked})
+                )
                 translations_grid.addWidget(checkbox, j, 1)
                 
                 # Translation text
@@ -247,9 +253,6 @@ class TranslationValidator(QMainWindow):
                     lambda t=translation, w=trans_text: self.update_translation_text(t, w)
                 )
                 translations_grid.addWidget(trans_text, j, 2)
-
-                # Only store checkbox reference (no longer store widget)
-                translation["checkbox"] = checkbox
                         
             match_layout.addLayout(translations_grid)
             self.scroll_layout.addWidget(match_group)
@@ -258,9 +261,6 @@ class TranslationValidator(QMainWindow):
         self.scroll_layout.addStretch()
         self.update_status_label()
 
-    def update_validation(self, translation, state):
-        translation["validated"] = state == Qt.Checked
-        
     def previous_example(self):
         if self.current_index > 0:
             self.current_index -= 1
@@ -295,15 +295,7 @@ class TranslationValidator(QMainWindow):
     def save_data(self):
         if not self.data:
             return
-            
-        # Update translations from checkboxes only
-        for example in self.data["examples"]:
-            for match in example.get("fuzzy_matches", []):
-                for translation in match.get("translations", []):
-                    if "checkbox" in translation:
-                        translation["validated"] = translation["checkbox"].isChecked()
-                        del translation["checkbox"]  # Clean up only checkbox reference
-                                
+                                    
         # Save to file
         save_filename = f"translations_validated_{self.filename}"
         save_path, _ = QFileDialog.getSaveFileName(
