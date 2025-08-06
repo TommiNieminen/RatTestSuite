@@ -1,122 +1,32 @@
 import json
 from openai import OpenAI
 import argparse
+from joblib import Parallel, delayed
 
-def generate_fuzzy_tests(client,example):
-    example = json.dumps(example)
-    input_format = """
-{
-      "fuzzy_matches": [
-        {
-          "type": "deletion",
-          "similarity_estimate": 0.6065573770491803,
-          "sentence": "Software update fixes a bug.",
-          "validated": true,
-          "translations": [
-            {
-              "target": "Ohjelmistopäivitys korjaa ohjelmistovirheen.",
-            }
-          ]
-        }
-      ],
-      "main_sentence": "The software update will fix the security vulnerabilities.",
-      "terms": {
-        "software": [
-          {
-            "target": "ohjelmisto",
-            "tests": [
-              {
-                "type": "term_present",
-                "condition": "\\b[Oo]hjelmisto(.*)?\\b"
-              }
-            ],
-            "selected": true
-          },
-          {
-            "target": "tietokoneohjelma",
-            "tests": [
-              {
-                "type": "term_present",
-                "condition": "\\b[Tt]ietokoneohjelm(.*)?\\b"
-              }
-            ],
-            "selected": true
-          },
-        ],
-        "update": [
-            {
-                "target": "p\u00e4ivitys",
-                "tests": [
-                    {
-                        "type": "term_present",
-                        "condition": "\\b[Pp]\u00e4ivity(.*)?\\b"
-                    }
-                ]
-            },
-            {
-                "target": "ohjelmistop\u00e4ivitys",
-                "tests": [
-                    {
-                        "type": "term_present",
-                        "condition": "\\b[Oo]hjelmistop\u00e4ivity(.*)?\\b"
-                    }
-                ]
-            }
-        ]
-      }
-    }
-"""
+def generate_fuzzy_tests(client,examples):
 
-    template = """
-            {
-          "type": "deletion",
-          "similarity_estimate": 0.6065573770491803,
-          "sentence": "Software update fixes a bug.",
-          "validated": true,
-          "translations": [
-            {
-              "target": "Ohjelmistopäivitys korjaa ohjelmistovirheen.",
-              "tests": [
-                    {
-                        "type": "surface_form_present",
-                        "condition": "\\b[Oo]hjelmistopäivity(.*)?\\b",
-                        "term_conflict": "update"
-                    },
-                    {
-                        "type": "surface_form_present",
-                        "condition": "\\bkorjaa\\b"
-                    },
-                    {
-                        "type": "construction_present",
-                        "condition": "korjaa haavoittuvuudet"
-                    },
-                    {
-                        "type": "surface_form_present",
-                        "condition": "\\bohjelmistovirheen\\b",
-                        "negative": "true"
-                    }
-                    ]
-                }
-              ]
-              }"""
+    example_strings = []
+    for src,fuzzy_src,fuzzy_tgt,_ in examples:
+      example_string = """Main sentence: {src}
+      Fuzzy Match: {fuzzy_src}
+      Translation: {fuzzy_tgt}
+      """.format(src=src,fuzzy_src=fuzzy_src,fuzzy_tgt=fuzzy_tgt)
 
-    prompt = """You are provided a JSON structure representing a test case with the following format:
+      example_strings.append(example_string)
 
-    {input_format}
-
-    Add tests to fuzzy matches. The purpose of these tests is to check if the fuzzy match has been properly utilized in a translation. They are similar to the term tests, but there are more types of fuzzy match tests. Here is an example of a fuzzy match with tests:
-
-    {template}
+    prompt = """Given a main source sentence in English, a fuzzy match of that source sentence, and a Finnish translation of that fuzzy match, produce three lists of tokens:
     
-    Tests of type surface_form_present are meant to check for parts of the fuzzy that should be present in the translation of the main sentence when utilizing the fuzzy. Tests of type construction_present are meant to check for linguistic constructions that should be present in the translation when utilizing the fuzzy. For instance, in the example fuzzy match above, the construction used in the fuzzy match is "SUBJECT korjaa OBJECT", so we use the test "korjaa haavoittuvuudet" to check that the translation uses the same construction.
+    1. tokens of the Finnish translation that semantically correspond to English tokens occurring in the main source and the fuzzy source
+    2. tokens of the Finnish translation that semantically correspond to English tokens occurring only in the fuzzy match source.
+    
+    If a token corresponds only partially with the main sentence's English tokens, do not include it in the first list. The tokens should be in the lists in the same order as in the translation.
 
-    A special case are surface_form_present tests where the surface form corresponds to some term translation for the main sentence. In those cases, the test should have the "term_conflict": "true" property.
+    Output the lists in the following JSON format: {{"positive_tokens": LIST1, "negative_tokens": LIST2}}
 
-    Generate fuzzy tests for the following test case (make sure to preserve the target sentence in the translations):
+    Process the following example according to the above instructions:
 
-    {example}
-
-    """.format(input_format=input_format,template=template,example=example)
+    {examples}
+    """.format(examples="\n".join(example_strings))
 
     response = client.chat.completions.create(
         model="deepseek-chat",
@@ -153,14 +63,32 @@ def main():
     test_suite_path = args.test_suite_path
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com/beta")
 
-    with open(test_suite_path, 'r') as f:
+    with open(test_suite_path, 'r',encoding="utf8") as f:
         data = json.load(f)
 
-    for example in data["examples"]:
-        example_with_fuzzy_tests = generate_fuzzy_tests(client,example)
-        example["fuzzy_matches"] = example_with_fuzzy_tests["fuzzy_matches"]
+    count = 0
+    examples = []
+    
+    for example in data.get("examples", []):
+        src = example.get("main_sentence")
+        for fuzzy in example.get("fuzzy_matches", []):
+            fuzzy_src = fuzzy.get("sentence")
+            
+            for translation in fuzzy.get("translations", []):
+                if translation.get("validated"):
+                    fuzzy_tgt = translation.get("target")
+                    examples.append((src,fuzzy_src,fuzzy_tgt,translation))
+                    count += 1
+                    if len(examples) == 20:
+                        results = Parallel(n_jobs=20, prefer="threads")(delayed(generate_fuzzy_tests)(client,[ex]) for ex in examples)
+                        
+                        for (_,_,_,translation_anchor),token_lists in zip(examples,results):
+                            translation_anchor["tests"] = token_lists
+                        print(f"processed {count} examples")
+                        examples = []
+                    
 
-    with open(f'with_terms_{test_suite_path}', 'w') as term_json_file:
+    with open(f'with_tests_{test_suite_path}', 'w') as term_json_file:
         json.dump(data, term_json_file, indent=4)
 
 if __name__ == "__main__":
